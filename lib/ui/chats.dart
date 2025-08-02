@@ -1,4 +1,7 @@
+import 'dart:async';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../services/auth_services.dart';
@@ -15,10 +18,68 @@ class ChatScreen extends StatefulWidget {
 
 class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _messageController = TextEditingController();
+  final FocusNode _focusNode = FocusNode();
+  List<String> _emojiNames = [];
+  final Map<String, Uint8List> _emojiCache = {};
+  bool _showEmojis = false;
+
+  static const platform = MethodChannel("com.io.fluxct/emojis");
+
+  @override
+  void initState() {
+    super.initState();
+    _loadEmojis();
+  }
+
+  Future<List<String>> _loadEmojis() async {
+    try {
+      final result = await platform.invokeMethod('listEmojis');
+      return List<String>.from(result);
+    } on PlatformException catch (e) {
+      debugPrint("Failed to load emojis: ${e.message}");
+      return [];
+    }
+  }
+
+  Future<Uint8List> _getEmojiBytes(String emojiName) async {
+    if (_emojiCache.containsKey(emojiName)) {
+      return _emojiCache[emojiName]!;
+    }
+    try {
+      final bytes = await platform.invokeMethod("getEmojiBytes", {
+        "name": emojiName,
+      });
+      _emojiCache[emojiName] = bytes;
+      return bytes;
+    } catch (e) {
+      debugPrint("Failed to load emoji bytes: $e");
+      throw Exception("Emoji not found");
+    }
+  }
+
+  void _insertEmoji(String emojiName) {
+    final index = _messageController.selection.baseOffset;
+    final text = _messageController.text;
+    final emojiTag = "<img=$emojiName>";
+
+    _messageController.text = text.replaceRange(index, index, emojiTag);
+    _messageController.selection = TextSelection.fromPosition(
+      TextPosition(offset: index + emojiTag.length),
+    );
+  }
+
+  Widget _buildMessageContent(String text) {
+    // Simple implementation - you can expand this to parse <img> tags
+    return Text(
+      text,
+      style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
+    );
+  }
 
   @override
   void dispose() {
     _messageController.dispose();
+    _focusNode.dispose();
     super.dispose();
   }
 
@@ -58,7 +119,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   .snapshots(),
               builder: (context, snapshot) {
                 if (snapshot.hasError) {
-                  return const Center(child: Text('Error loading messages'));
+                  return Center(child: Text('Error: ${snapshot.error}'));
                 }
 
                 if (snapshot.connectionState == ConnectionState.waiting) {
@@ -90,12 +151,7 @@ class _ChatScreenState extends State<ChatScreen> {
                           color: isMe ? Colors.blue : Colors.grey[300],
                           borderRadius: BorderRadius.circular(12),
                         ),
-                        child: Text(
-                          message['text'],
-                          style: TextStyle(
-                            color: isMe ? Colors.white : Colors.black,
-                          ),
-                        ),
+                        child: _buildMessageContent(message['text']),
                       ),
                     );
                   },
@@ -103,13 +159,63 @@ class _ChatScreenState extends State<ChatScreen> {
               },
             ),
           ),
+          if (_showEmojis)
+            SizedBox(
+              height: 200,
+              child: GridView.builder(
+                padding: const EdgeInsets.all(8),
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 8,
+                  mainAxisSpacing: 8,
+                  crossAxisSpacing: 8,
+                ),
+                itemCount: _emojiNames.length,
+                itemBuilder: (context, index) {
+                  final emojiName = _emojiNames[index];
+                  return FutureBuilder<Uint8List>(
+                    future: _getEmojiBytes(emojiName),
+                    builder: (context, snapshot) {
+                      if (snapshot.hasData) {
+                        return GestureDetector(
+                          onTap: () {
+                            _insertEmoji(emojiName);
+                            _focusNode.requestFocus();
+                          },
+                          child: Image.memory(
+                            snapshot.data!,
+                            width: 32,
+                            height: 32,
+                          ),
+                        );
+                      } else if (snapshot.hasError) {
+                        return const Icon(Icons.error);
+                      } else {
+                        return const CircularProgressIndicator();
+                      }
+                    },
+                  );
+                },
+              ),
+            ),
           Padding(
             padding: const EdgeInsets.all(8.0),
             child: Row(
               children: [
+                IconButton(
+                  icon: Icon(
+                    _showEmojis ? Icons.keyboard : Icons.emoji_emotions,
+                  ),
+                  onPressed: () {
+                    setState(() {
+                      _showEmojis = !_showEmojis;
+                    });
+                    if (!_showEmojis) _focusNode.requestFocus();
+                  },
+                ),
                 Expanded(
                   child: TextField(
                     controller: _messageController,
+                    focusNode: _focusNode,
                     decoration: const InputDecoration(
                       hintText: 'Type a message...',
                       border: OutlineInputBorder(),
@@ -130,9 +236,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     } catch (e) {
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
-                          content: Text(
-                            'Failed to send message: ${e.toString()}',
-                          ),
+                          content: Text('Failed to send: ${e.toString()}'),
                         ),
                       );
                     }
