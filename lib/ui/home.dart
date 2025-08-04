@@ -23,7 +23,7 @@ class _HomeScreenState extends State<HomeScreen> {
           children: const [
             Icon(Icons.chat_bubble_outline, color: Colors.blue),
             SizedBox(width: 8),
-            Text('Chatmoji'),
+            Text('Flux Chat', style: TextStyle(color: Colors.blue)),
           ],
         ),
         actions: [
@@ -76,7 +76,7 @@ class _HomeScreenState extends State<HomeScreen> {
           if (chats.isEmpty) {
             return const Center(
               child: Text(
-                'Search for a username to start a conversation',
+                'Search for a username',
                 style: TextStyle(color: Colors.grey, fontSize: 16),
               ),
             );

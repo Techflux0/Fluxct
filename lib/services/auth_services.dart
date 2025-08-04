@@ -190,36 +190,59 @@ class AuthService {
   // Add these methods to your AuthService class
 
   Future<String> createNewChat(String otherUserId) async {
-    await cleanInvalidChats();
     try {
       final currentUserId = getCurrentUserId();
-      if (currentUserId == null) throw Exception('Not authenticated');
+      if (currentUserId == null) {
+        throw Exception('User not authenticated');
+      }
 
-      // Create a sorted chat ID to prevent duplicate chats
+      if (currentUserId == otherUserId) {
+        throw Exception('Cannot create chat with yourself');
+      }
+
       final chatId = _generateChatId(currentUserId, otherUserId);
+      final chatDoc = await _firestore.collection('chats').doc(chatId).get();
 
-      // Create chat document in 'chats' collection
+      if (chatDoc.exists) {
+        return chatId;
+      }
+
+      final otherUserDoc = await _firestore
+          .collection('users')
+          .doc(otherUserId)
+          .get();
+      if (!otherUserDoc.exists) {
+        throw Exception('Recipient user not found');
+      }
+
       await _firestore.collection('chats').doc(chatId).set({
         'participants': [currentUserId, otherUserId],
+        'participantData': {
+          currentUserId: {
+            'userId': currentUserId,
+            'lastRead': FieldValue.serverTimestamp(),
+          },
+          otherUserId: {'userId': otherUserId, 'lastRead': null},
+        },
         'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
         'lastMessage': '',
-        'lastMessageTime': FieldValue.serverTimestamp(),
+        'lastMessageTime': null,
+        'unreadCount': {currentUserId: 0, otherUserId: 0},
+        'isGroup': false,
       });
 
-      // Add chat reference to both users' chat lists
-      final batch = _firestore.batch();
+      await _firestore.runTransaction((transaction) async {
+        transaction.update(_firestore.collection('users').doc(currentUserId), {
+          'chats': FieldValue.arrayUnion([chatId]),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
 
-      final currentUserRef = _firestore.collection('users').doc(currentUserId);
-      batch.update(currentUserRef, {
-        'chats': FieldValue.arrayUnion([chatId]),
+        transaction.update(_firestore.collection('users').doc(otherUserId), {
+          'chats': FieldValue.arrayUnion([chatId]),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
       });
-
-      final otherUserRef = _firestore.collection('users').doc(otherUserId);
-      batch.update(otherUserRef, {
-        'chats': FieldValue.arrayUnion([chatId]),
-      });
-
-      await batch.commit();
 
       return chatId;
     } catch (e) {
@@ -230,44 +253,70 @@ class AuthService {
 
   String _generateChatId(String userId1, String userId2) {
     final ids = [userId1, userId2]..sort();
-    return '${ids[0]}_${ids[1]}';
+    return 'private_${ids[0]}_${ids[1]}';
   }
 
   Future<void> sendMessage({
     required String chatId,
     required String text,
+    String? replyTo,
   }) async {
-    try {
-      final currentUserId = getCurrentUserId();
-      if (currentUserId == null) throw Exception('Not authenticated');
+    final currentUserId = getCurrentUserId();
+    if (currentUserId == null) throw Exception('Not authenticated');
 
-      final messageId = _uuid.v4();
-      final messageRef = _firestore
-          .collection('chats')
-          .doc(chatId)
-          .collection('messages')
-          .doc(messageId);
+    // Get the other participant's ID
+    final otherUserId = await _getOtherParticipantId(chatId, currentUserId);
+    if (otherUserId == null) {
+      throw Exception('Chat participant not found');
+    }
 
-      await _firestore.runTransaction((transaction) async {
-        // Create new message
-        transaction.set(messageRef, {
-          'id': messageId,
-          'senderId': currentUserId,
-          'text': text,
-          'timestamp': FieldValue.serverTimestamp(),
-          'status': 'sent',
-        });
+    final messageId = _uuid.v4();
+    final messageRef = _firestore
+        .collection('chats')
+        .doc(chatId)
+        .collection('messages')
+        .doc(messageId);
 
-        // Update chat last message
-        final chatRef = _firestore.collection('chats').doc(chatId);
-        transaction.update(chatRef, {
-          'lastMessage': text,
-          'lastMessageTime': FieldValue.serverTimestamp(),
-        });
+    await _firestore.runTransaction((transaction) async {
+      // Create message
+      transaction.set(messageRef, {
+        'id': messageId,
+        'senderId': currentUserId,
+        'text': text,
+        'timestamp': FieldValue.serverTimestamp(),
+        'status': 'sent',
+        'replyTo': replyTo,
       });
+
+      // Update chat metadata
+      transaction.update(_firestore.collection('chats').doc(chatId), {
+        'lastMessage': text,
+        'lastMessageTime': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+        'unreadCount.$currentUserId': 0,
+        'unreadCount.$otherUserId': FieldValue.increment(1),
+      });
+    });
+  }
+
+  Future<String?> _getOtherParticipantId(
+    String chatId,
+    String currentUserId,
+  ) async {
+    try {
+      final chatDoc = await _firestore.collection('chats').doc(chatId).get();
+      if (!chatDoc.exists) return null;
+
+      final participants = List<String>.from(
+        chatDoc.data()?['participants'] ?? [],
+      );
+      return participants.firstWhere(
+        (id) => id != currentUserId,
+        orElse: () => '',
+      );
     } catch (e) {
-      print('Error sending message: $e');
-      rethrow;
+      print('Error getting other participant: $e');
+      return null;
     }
   }
 
