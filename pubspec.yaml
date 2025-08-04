@@ -30,7 +30,5 @@ flutter:
   uses-material-design: true
   assets:
     - assets/launcher/logo.png
-    - assets/emoji/emoji.json
-    - assets/emoji/
     - assets/ui/bg-chat-tile-dark.png
 
