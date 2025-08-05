@@ -187,7 +187,18 @@ class AuthService {
     }
   }
 
-  // Add these methods to your AuthService class
+  Future<void> updateStatus(String status) async {
+    try {
+      final userId = getCurrentUserId();
+      if (userId != null) {
+        await _firestore.collection('users').doc(userId).update({
+          'status': status,
+        });
+      }
+    } catch (e) {
+      print('Error updating status: $e');
+    }
+  }
 
   Future<String> createNewChat(String otherUserId) async {
     try {
@@ -264,7 +275,6 @@ class AuthService {
     final currentUserId = getCurrentUserId();
     if (currentUserId == null) throw Exception('Not authenticated');
 
-    // Get the other participant's ID
     final otherUserId = await _getOtherParticipantId(chatId, currentUserId);
     if (otherUserId == null) {
       throw Exception('Chat participant not found');
